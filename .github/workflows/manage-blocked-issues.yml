@@ -1,25 +1,29 @@
-name: Clean Closed 'Blocked by' Comments
+name: Clean Blocked Issue Comments
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *'  # Runs hourly – adjust as needed
+    - cron: '0 * * * *'  # every hour
+
+permissions:
+  issues: write
+  contents: read
 
 jobs:
   clean-blocked-comments:
     runs-on: ubuntu-latest
-    permissions:
-      issues: write  # Required to edit comments
     steps:
-      - name: Clean 'Blocked by' References
+      - name: Clean up closed issue references
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const regex = /#(\d+)/g;
 
-            console.log(`🔍 Scanning open issues in ${owner}/${repo}`);
+            console.log(`📌 Scanning open issues in ${owner}/${repo}`);
+
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner,
               repo,
@@ -27,11 +31,7 @@ jobs:
             });
 
             for (const issue of issues) {
-              console.log(`\n📌 Issue #${issue.number}: ${issue.title}`);
-              if (issue.comments === 0) {
-                console.log("   🚫 No comments.");
-                continue;
-              }
+              console.log(`\n🔍 Issue #${issue.number}: ${issue.title}`);
 
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner,
@@ -40,57 +40,59 @@ jobs:
               });
 
               for (const comment of comments) {
-                const matches = [...comment.body.matchAll(regex)];
-                if (matches.length === 0) {
+                const originalBody = comment.body;
+                const matches = [...originalBody.matchAll(regex)];
+                const referencedIssues = matches.map(match => parseInt(match[1]));
+
+                if (referencedIssues.length === 0) {
                   console.log(`   💬 Comment ID: ${comment.id}`);
-                  console.log("     🚫 No 'Blocked by' reference found.");
+                  console.log(`     🚫 No 'Blocked by' reference found.`);
                   continue;
                 }
 
                 console.log(`   💬 Comment ID: ${comment.id}`);
-                console.log(`     📄 Raw: "${comment.body}"`);
+                console.log(`     📄 Raw: "${originalBody.trim()}"`);
 
                 const stillBlocked = [];
 
-                for (const match of matches) {
-                  const blockedIssueNumber = parseInt(match[1]);
-                  console.log(`     🔗 Found reference to issue #${blockedIssueNumber}`);
-
+                for (const ref of referencedIssues) {
                   try {
-                    const blockedIssue = await github.rest.issues.get({
-                      owner,
-                      repo,
-                      issue_number: blockedIssueNumber
-                    });
-
-                    if (blockedIssue.data.state === 'closed') {
-                      console.log(`     ✅ Issue #${blockedIssueNumber} is closed.`);
+                    const refIssue = await github.rest.issues.get({ owner, repo, issue_number: ref });
+                    if (refIssue.data.state === 'open') {
+                      stillBlocked.push(`#${ref}`);
+                      console.log(`     🔗 Found reference to issue #${ref}`);
+                      console.log(`     ⏳ Issue #${ref} is still open.`);
                     } else {
-                      console.log(`     ⏳ Issue #${blockedIssueNumber} is still open.`);
-                      stillBlocked.push(`#${blockedIssueNumber}`);
+                      console.log(`     🔗 Found reference to issue #${ref}`);
+                      console.log(`     ✅ Issue #${ref} is closed.`);
                     }
                   } catch (err) {
-                    console.warn(`     ⚠️ Could not fetch issue #${blockedIssueNumber}: ${err.message}`);
+                    console.warn(`     ⚠️ Error fetching issue #${ref}: ${err.message}`);
                   }
                 }
 
                 if (stillBlocked.length === 0) {
-                  console.log("     🧹 All references are closed. Clearing comment.");
+                  const newBody = `[Auto-cleaned: all blocking issues are closed]`;
+                  console.log(`     🧹 Updating comment to: "${newBody}"`);
                   await github.rest.issues.updateComment({
                     owner,
                     repo,
                     comment_id: comment.id,
-                    body: '[Auto-cleaned: all blocking issues are closed]'
+                    body: newBody
                   });
                 } else {
-                  const updatedBody = `Blocked by ${stillBlocked.join(' ')}`;
-                  console.log(`     ✏️ Updating comment to: "${updatedBody}"`);
-                  await github.rest.issues.updateComment({
-                    owner,
-                    repo,
-                    comment_id: comment.id,
-                    body: updatedBody
-                  });
+                  const newBody = `Blocked by ${stillBlocked.join(' ')}`;
+                  if (newBody !== originalBody.trim()) {
+                    console.log(`     ✏️ Updating comment to: "${newBody}"`);
+                    await github.rest.issues.updateComment({
+                      owner,
+                      repo,
+                      comment_id: comment.id,
+                      body: newBody
+                    });
+                  } else {
+                    console.log(`     ✅ Comment is already correct. No update needed.`);
+                  }
                 }
               }
             }
