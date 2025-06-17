@@ -2,8 +2,6 @@ name: Clean Up Blocked By References
 
 on:
   workflow_dispatch:
-  issues:
-    types: [opened, edited, reopened]
 
 jobs:
   cleanup-blocked:
