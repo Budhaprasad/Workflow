@@ -1,22 +1,21 @@
-name: Remove Comments with Closed Issue References
+name: Read Issues & Clean Comments
 
 on:
   workflow_dispatch:
 
 permissions:
-  issues: write  # Needed to delete comments
+  issues: write  # Needed to read and update comments
 
 jobs:
-  cleanup-comments:
+  process-issues:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Delete comments that reference only closed issues
+      - name: Print comments and clean closed references
         uses: actions/github-script@v7
         with:
           script: |
-            const issueRefRegex = /(?:^|\s)(?:(\S+\/\S+)#(\d+)|#(\d+))/g;
-
+            const issueRefRegex = /(\S+\/\S+#\d+|#\d+)/g;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
@@ -27,7 +26,12 @@ jobs:
             });
 
             for (const issue of issues.data) {
-              if (issue.comments === 0) continue;
+              console.log(`\n#${issue.number}: ${issue.title}`);
+
+              if (issue.comments === 0) {
+                console.log('  🛑 No comments.');
+                continue;
+              }
 
               const comments = await github.rest.issues.listComments({
                 owner,
@@ -36,56 +40,55 @@ jobs:
               });
 
               for (const comment of comments.data) {
-                const refs = [...comment.body.matchAll(issueRefRegex)];
+                const original = comment.body;
+                console.log(`\n  🗨️ Comment by ${comment.user.login}: ${original.substring(0, 100).replace(/\n/g, ' ')}...`);
 
+                const refs = [...original.matchAll(issueRefRegex)];
                 if (refs.length === 0) continue;
 
                 let allClosed = true;
 
                 for (const match of refs) {
-                  const [ , crossRepo, crossNum, sameRepoNum ] = match;
+                  const ref = match[0];
+                  let refOwner = owner;
+                  let refRepo = repo;
+                  let refNum;
+
+                  if (ref.includes('/')) {
+                    const [fullRepo, num] = ref.split('#');
+                    [refOwner, refRepo] = fullRepo.split('/');
+                    refNum = parseInt(num);
+                  } else {
+                    refNum = parseInt(ref.replace('#', ''));
+                  }
 
                   try {
-                    let refIssue;
+                    const refIssue = await github.rest.issues.get({
+                      owner: refOwner,
+                      repo: refRepo,
+                      issue_number: refNum
+                    });
 
-                    if (sameRepoNum) {
-                      refIssue = await github.rest.issues.get({
-                        owner,
-                        repo,
-                        issue_number: Number(sameRepoNum)
-                      });
-                    } else if (crossRepo && crossNum) {
-                      const [crossOwner, crossRepoName] = crossRepo.split('/');
-                      refIssue = await github.rest.issues.get({
-                        owner: crossOwner,
-                        repo: crossRepoName,
-                        issue_number: Number(crossNum)
-                      });
-                    }
-
-                    if (refIssue && refIssue.data.state === 'open') {
+                    if (refIssue.data.state === 'open') {
                       allClosed = false;
                       break;
                     }
-                  } catch (error) {
-                    console.warn(`⚠️ Could not fetch referenced issue: ${error.message}`);
+                  } catch (err) {
+                    console.warn(`⚠️ Could not resolve issue ${ref}: ${err.message}`);
                     allClosed = false;
                     break;
                   }
                 }
 
                 if (allClosed) {
-                  // Only delete if the comment was authored by this GitHub token's user
-                  if (comment.user.type === 'Bot' || comment.user.login === context.actor) {
-                    await github.rest.issues.deleteComment({
-                      owner,
-                      repo,
-                      comment_id: comment.id
-                    });
-                    console.log(`🗑️ Deleted comment ${comment.id} from issue #${issue.number} — all referenced issues were closed.`);
-                  } else {
-                    console.log(`⛔ Skipping comment ${comment.id} by ${comment.user.login} — cannot delete.`);
-                  }
+                  console.log(`  🧹 Clearing comment ${comment.id} — all references are closed.`);
+
+                  await github.rest.issues.updateComment({
+                    owner,
+                    repo,
+                    comment_id: comment.id,
+                    body: '[This comment was auto-cleared because all referenced issues are closed.]'
+                  });
                 }
               }
             }
