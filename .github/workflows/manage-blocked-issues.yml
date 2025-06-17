@@ -17,9 +17,11 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const regex = /Blocked by #(\d+)/i;
+            const regex = /Blocked\s*by\s*#(\d+)/i;
 
             console.log(`🔍 Scanning open issues in ${owner}/${repo}`);
+
+            console.log(`   📄 Raw Comment Body: ${JSON.stringify(comment.body)}`);
 
             const issues = await github.rest.issues.listForRepo({
               owner,
