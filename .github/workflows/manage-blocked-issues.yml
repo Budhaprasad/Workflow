@@ -1,0 +1,129 @@
+name: Manage Blocked Issues
+
+on:
+  issues:
+    types: [edited, closed]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  manage-blockers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Manage blocker relationships
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue_number = context.issue?.number;
+            const { owner, repo } = context.repo;
+
+            if (!issue_number) {
+              console.log("No issue context available. Likely a scheduled run. Skipping.");
+              return;
+            }
+
+            const { data: issue } = await github.rest.issues.get({
+              owner,
+              repo,
+              issue_number,
+            });
+
+            function getBlockedField(issue) {
+              const match = issue.body?.match(/Blocked by Issue\(s\):\s*(.*)/i);
+              return match ? match[1].split(',').map(i => i.trim()) : [];
+            }
+
+            async function checkOpenIssues(refs) {
+              const open = [];
+              for (const ref of refs) {
+                const match = ref.match(/#(\d+)/);
+                if (!match) continue;
+                const num = parseInt(match[1]);
+                try {
+                  const { data: blocker } = await github.rest.issues.get({
+                    owner, repo, issue_number: num
+                  });
+                  if (blocker.state === "open") open.push(`#${num}`);
+                } catch (e) {
+                  console.log(`Error checking issue #${num}:`, e.message);
+                }
+              }
+              return open;
+            }
+
+            function getStatusLabel(issue) {
+              return issue.labels.find(l => l.name.startsWith("Status:"))?.name || null;
+            }
+
+            async function storePreviousStatus(issue) {
+              const current = getStatusLabel(issue);
+              if (current) {
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number,
+                  labels: [`PrevStatus:${current.split(':')[1]}`]
+                });
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number,
+                  name: current
+                });
+              }
+            }
+
+            function getPreviousStatus(issue) {
+              const prev = issue.labels.find(l => l.name.startsWith("PrevStatus:"));
+              return prev ? prev.name.split(':')[1] : null;
+            }
+
+            async function setStatus(status) {
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number,
+                labels: [`Status:${status}`]
+              });
+            }
+
+            async function clearBlockedField(issue, openRefs) {
+              if (issue.body && issue.body.includes("Blocked by Issue(s):")) {
+                const newBody = issue.body.replace(
+                  /Blocked by Issue\(s\):.*/i,
+                  openRefs.length > 0 ? `Blocked by Issue(s): ${openRefs.join(', ')}` : ''
+                ).trim();
+                await github.rest.issues.update({
+                  owner, repo, issue_number,
+                  body: newBody
+                });
+              }
+            }
+
+            // Main logic
+            const refs = getBlockedField(issue);
+            const openRefs = await checkOpenIssues(refs);
+
+            const currentStatus = getStatusLabel(issue);
+
+            if (openRefs.length > 0) {
+              if (currentStatus !== 'Status:Blocked') {
+                await storePreviousStatus(issue);
+                await setStatus('Blocked');
+              }
+              await clearBlockedField(issue, openRefs);
+            } else {
+              if (currentStatus === 'Status:Blocked') {
+                const prev = getPreviousStatus(issue);
+                if (prev) {
+                  await setStatus(prev);
+                  await github.rest.issues.removeLabel({
+                    owner, repo, issue_number,
+                    name: `PrevStatus:${prev}`
+                  });
+                } else {
+                  await setStatus('To-Do');
+                }
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number,
+                  name: 'Status:Blocked'
+                });
+              }
+              await clearBlockedField(issue, openRefs);
+            }
