@@ -1,27 +1,24 @@
-name: Clear Blocked by Comments if Reference Is Closed
+name: Clean Closed Blocked References
 
 on:
-  workflow_dispatch:  # You can also use schedule or push triggers
-
-permissions:
-  issues: write  # Required to update issue comments
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *" # Runs every hour
 
 jobs:
-  clean-blocked-comments:
+  clean-blocked-references:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check and clean "Blocked by" comments
+      - name: Check and Clean Blocked by References
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const regex = /Blocked\s*by\s*#(\d+)/i;
+            const regex = /Blocked\s*by\s*(?:#(\d+)|\[#(\d+)\])/i;
 
-            console.log(`🔍 Scanning open issues in ${owner}/${repo}`);
-
-            console.log(`   📄 Raw Comment Body: ${JSON.stringify(comment.body)}`);
+            console.log(`📦 Scanning open issues in ${owner}/${repo}`);
 
             const issues = await github.rest.issues.listForRepo({
               owner,
@@ -30,21 +27,22 @@ jobs:
             });
 
             for (const issue of issues.data) {
-              console.log(`➡️ Issue #${issue.number}: ${issue.title}`);
+              console.log(`\n🔎 Issue #${issue.number}: ${issue.title}`);
 
               if (issue.comments === 0) {
-                console.log(`   ⛔ No comments on this issue.`);
+                console.log(`   🚫 No comments found.`);
                 continue;
               }
 
-              const comments = await github.rest.issues.listComments({
+              const { data: comments } = await github.rest.issues.listComments({
                 owner,
                 repo,
                 issue_number: issue.number
               });
 
-              for (const comment of comments.data) {
+              for (const comment of comments) {
                 console.log(`   💬 Comment ID: ${comment.id}`);
+                console.log(`     📄 Raw: ${JSON.stringify(comment.body)}`);
 
                 const match = comment.body.match(regex);
                 if (!match) {
@@ -52,8 +50,8 @@ jobs:
                   continue;
                 }
 
-                const blockedIssueNumber = parseInt(match[1]);
-                console.log(`     🔗 Found reference: Blocked by #${blockedIssueNumber}`);
+                const blockedIssueNumber = parseInt(match[1] || match[2]);
+                console.log(`     🔗 Found reference to issue #${blockedIssueNumber}`);
 
                 try {
                   const blockedIssue = await github.rest.issues.get({
@@ -63,20 +61,19 @@ jobs:
                   });
 
                   if (blockedIssue.data.state === 'closed') {
-                    console.log(`     ✅ Issue #${blockedIssueNumber} is closed. Updating comment.`);
+                    console.log(`     ✅ Referenced issue #${blockedIssueNumber} is closed. Removing comment.`);
 
                     await github.rest.issues.updateComment({
                       owner,
                       repo,
                       comment_id: comment.id,
-                      body: '[Auto-removed blocked-by reference: the blocking issue is now closed.]'
+                      body: '[Auto-cleaned: referenced issue is now closed]'
                     });
                   } else {
-                    console.log(`     🕒 Issue #${blockedIssueNumber} is still open. Leaving comment as is.`);
+                    console.log(`     ⏳ Referenced issue #${blockedIssueNumber} is still open.`);
                   }
                 } catch (error) {
                   console.warn(`     ⚠️ Could not fetch issue #${blockedIssueNumber}: ${error.message}`);
                 }
               }
             }
-
