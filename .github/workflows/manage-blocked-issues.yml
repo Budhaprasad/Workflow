@@ -1,67 +1,60 @@
-name: Check Blocked Issues
+name: Clean Up Blocked
 
 on:
   workflow_dispatch:
 
 jobs:
-  check-blocked-issues:
+  update-blocked-comment:
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v3
-
-      - name: Run Block Check Script
-        uses: actions/github-script@v7
+      - uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const issues = await github.paginate(github.rest.issues.listForRepo, {
+            const issue_number = context.issue.number;
+
+            // Get all comments for the issue
+            const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: 'open'
+              issue_number
             });
 
-            for (const issue of issues) {
-              const comments = await github.rest.issues.listComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number
-              });
+            for (const comment of comments.data) {
+              const match = comment.body.match(/Blocked by Issue(.*)/);
+              if (!match) continue;
 
-              for (const comment of comments.data) {
-                const match = comment.body.match(/Blocked by Issue(.*)/i);
-                if (!match) continue;
+              const issueRefs = [...comment.body.matchAll(/#(\d+)/g)].map(m => parseInt(m[1]));
+              const openIssues = [];
 
-                const referenced = match[1]
-                  .split(/[#\s]+/)
-                  .filter(n => n)
-                  .map(n => parseInt(n, 10))
-                  .filter(n => !isNaN(n));
-
-                const statusChecks = await Promise.all(referenced.map(async (refId) => {
-                  try {
-                    const refIssue = await github.rest.issues.get({
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      issue_number: refId
-                    });
-                    return refIssue.data.state === 'closed';
-                  } catch (e) {
-                    return false;
-                  }
-                }));
-
-                const allClosed = statusChecks.every(v => v === true);
-
-                if (allClosed) {
-                  await github.rest.issues.deleteComment({
+              for (const num of issueRefs) {
+                try {
+                  const issue = await github.rest.issues.get({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
-                    comment_id: comment.id
+                    issue_number: num
                   });
-                  console.log(`Deleted comment on Issue #${issue.number}: ${comment.id}`);
+
+                  if (issue.data.state === 'open') {
+                    openIssues.push(`#${num}`);
+                  }
+                } catch (e) {
+                  console.log(`Error checking issue #${num}:`, e.message);
                 }
+              }
+
+              // Rebuild the comment
+              const newBody = openIssues.length > 0
+                ? `Blocked by Issue ${openIssues.join(' ')}`
+                : '*No longer blocked*';
+
+              if (newBody !== comment.body) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                  body: newBody
+                });
               }
             }
