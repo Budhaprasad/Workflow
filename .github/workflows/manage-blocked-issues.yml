@@ -1,6 +1,8 @@
 name: Clean Up Blocked
 
 on:
+  issues:
+    types: [opened, edited, reopened]
   workflow_dispatch:
 
 jobs:
