@@ -1,23 +1,23 @@
-name: Read Issues & Clean Comments
+name: Clear Blocked by Comments If Issue Is Closed
 
 on:
   workflow_dispatch:
 
 permissions:
-  issues: write  # Needed to read and update comments
+  issues: write  # Required to edit comments
 
 jobs:
-  process-issues:
+  clean-blocked-by-comments:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Print comments and clean closed references
+      - name: Check and clean blocked-by comments
         uses: actions/github-script@v7
         with:
           script: |
-            const issueRefRegex = /(\S+\/\S+#\d+|#\d+)/g;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const regex = /Blocked by #(\d+)/i;
 
             const issues = await github.rest.issues.listForRepo({
               owner,
@@ -26,12 +26,7 @@ jobs:
             });
 
             for (const issue of issues.data) {
-              console.log(`\n#${issue.number}: ${issue.title}`);
-
-              if (issue.comments === 0) {
-                console.log('  🛑 No comments.');
-                continue;
-              }
+              if (issue.comments === 0) continue;
 
               const comments = await github.rest.issues.listComments({
                 owner,
@@ -40,55 +35,29 @@ jobs:
               });
 
               for (const comment of comments.data) {
-                const original = comment.body;
-                console.log(`\n  🗨️ Comment by ${comment.user.login}: ${original.substring(0, 100).replace(/\n/g, ' ')}...`);
+                const match = comment.body.match(regex);
+                if (!match) continue;
 
-                const refs = [...original.matchAll(issueRefRegex)];
-                if (refs.length === 0) continue;
-
-                let allClosed = true;
-
-                for (const match of refs) {
-                  const ref = match[0];
-                  let refOwner = owner;
-                  let refRepo = repo;
-                  let refNum;
-
-                  if (ref.includes('/')) {
-                    const [fullRepo, num] = ref.split('#');
-                    [refOwner, refRepo] = fullRepo.split('/');
-                    refNum = parseInt(num);
-                  } else {
-                    refNum = parseInt(ref.replace('#', ''));
-                  }
-
-                  try {
-                    const refIssue = await github.rest.issues.get({
-                      owner: refOwner,
-                      repo: refRepo,
-                      issue_number: refNum
-                    });
-
-                    if (refIssue.data.state === 'open') {
-                      allClosed = false;
-                      break;
-                    }
-                  } catch (err) {
-                    console.warn(`⚠️ Could not resolve issue ${ref}: ${err.message}`);
-                    allClosed = false;
-                    break;
-                  }
-                }
-
-                if (allClosed) {
-                  console.log(`  🧹 Clearing comment ${comment.id} — all references are closed.`);
-
-                  await github.rest.issues.updateComment({
+                const blockedIssueNumber = parseInt(match[1]);
+                try {
+                  const blockedIssue = await github.rest.issues.get({
                     owner,
                     repo,
-                    comment_id: comment.id,
-                    body: '[This comment was auto-cleared because all referenced issues are closed.]'
+                    issue_number: blockedIssueNumber
                   });
+
+                  if (blockedIssue.data.state === 'closed') {
+                    console.log(`🧹 Clearing comment in #${issue.number} - Blocked issue #${blockedIssueNumber} is closed.`);
+
+                    await github.rest.issues.updateComment({
+                      owner,
+                      repo,
+                      comment_id: comment.id,
+                      body: '[Auto-removed blocked-by reference: the blocking issue is now closed.]'
+                    });
+                  }
+                } catch (err) {
+                  console.warn(`⚠️ Could not fetch issue #${blockedIssueNumber}: ${err.message}`);
                 }
               }
             }
