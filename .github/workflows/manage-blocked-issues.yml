@@ -1,76 +1,24 @@
-name: Clean Up Blocked By References
+name: Read Issues
 
 on:
-  workflow_dispatch:
-  issues:
-    types: [opened, edited, reopened]
+  workflow_dispatch: # Allows manual triggering from the Actions tab
 
 jobs:
-  cleanup-blocked:
+  read-issues:
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
+
     steps:
-      - name: Check and update "Blocked by Issue" references
+      - name: Read open issues using GitHub API
         uses: actions/github-script@v7
         with:
           script: |
-            const issue = context.payload.issue;
-            const issueNumber = issue.number;
-            const repo = context.repo.repo;
-            const owner = context.repo.owner;
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open'  // or 'all', 'closed'
+            });
 
-            const body = issue.body;
-            if (!body) {
-              console.log("No body in issue.");
-              return;
-            }
-
-            // Extract "Blocked by Issue #2 #3"
-            const match = body.match(/Blocked by Issue\s+#([\d\s#]+)/i);
-            if (!match) {
-              console.log("No blocked issues found.");
-              return;
-            }
-
-            const issueRefs = match[1]
-              .split(/[#\s]+/)
-              .filter(Boolean)
-              .map(Number);
-
-            let openIssues = [];
-            for (const ref of issueRefs) {
-              try {
-                const res = await github.rest.issues.get({
-                  owner,
-                  repo,
-                  issue_number: ref
-                });
-                if (res.data.state === 'open') {
-                  openIssues.push(ref);
-                }
-              } catch (err) {
-                console.warn(`Could not fetch issue #${ref}: ${err}`);
-              }
-            }
-
-            let updatedBody;
-            if (openIssues.length === 0) {
-              // Remove the entire "Blocked by Issue..." line
-              updatedBody = body.replace(/^.*Blocked by Issue.*$/im, '').trim();
-            } else {
-              // Update line to show only open issues
-              updatedBody = body.replace(/Blocked by Issue.*$/im, `Blocked by Issue ${openIssues.map(i => `#${i}`).join(' ')}`);
-            }
-
-            if (updatedBody !== body) {
-              await github.rest.issues.update({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                body: updatedBody
-              });
-              console.log("Issue updated with remaining open blockers.");
-            } else {
-              console.log("No update needed.");
-            }
+            console.log(`Found ${issues.data.length} open issues:`);
+            issues.data.forEach(issue => {
+              console.log(`#${issue.number}: ${issue.title}`);
+            });
