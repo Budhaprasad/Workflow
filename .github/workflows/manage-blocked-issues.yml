@@ -4,40 +4,40 @@ on:
   workflow_dispatch:
 
 permissions:
-  issues: write  # Required to edit comments
+  issues: write
 
 jobs:
   clean-blocked-by-comments:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check and clean blocked-by comments
+      - name: Check and clear Blocked by comments
         uses: actions/github-script@v7
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const regex = /Blocked by #(\d+)/i;
-
+            
             const issues = await github.rest.issues.listForRepo({
               owner,
               repo,
               state: 'open'
             });
-
+            
             for (const issue of issues.data) {
               if (issue.comments === 0) continue;
-
+            
               const comments = await github.rest.issues.listComments({
                 owner,
                 repo,
                 issue_number: issue.number
               });
-
+            
               for (const comment of comments.data) {
                 const match = comment.body.match(regex);
                 if (!match) continue;
-
+            
                 const blockedIssueNumber = parseInt(match[1]);
                 try {
                   const blockedIssue = await github.rest.issues.get({
@@ -45,10 +45,10 @@ jobs:
                     repo,
                     issue_number: blockedIssueNumber
                   });
-
+            
                   if (blockedIssue.data.state === 'closed') {
                     console.log(`🧹 Clearing comment in #${issue.number} - Blocked issue #${blockedIssueNumber} is closed.`);
-
+            
                     await github.rest.issues.updateComment({
                       owner,
                       repo,
