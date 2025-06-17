@@ -1,19 +1,19 @@
-name: Manage Blocked Issues
+name: Auto-clean Blocked by Issues
 
 on:
-  workflow_dispatch:
   issues:
-    types: [opened, edited, closed]
+    types: [edited, reopened, closed]
+  workflow_dispatch:
 
 permissions:
   issues: write
   contents: read
 
 jobs:
-  manage-blockers:
-    runs-on: self-hosted
+  cleanup-blocked:
+    runs-on: ubuntu-latest
     steps:
-      - name: Manage blocker relationships
+      - name: Clean up closed blockers
         uses: actions/github-script@v7
         with:
           script: |
@@ -21,110 +21,53 @@ jobs:
             const { owner, repo } = context.repo;
 
             if (!issue_number) {
-              console.log("No issue context available. Likely a scheduled run. Skipping.");
+              console.log("No issue context available (likely a scheduled run). Exiting.");
               return;
             }
 
-            const { data: issue } = await github.rest.issues.get({
-              owner,
-              repo,
-              issue_number,
-            });
+            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number });
 
-            function getBlockedField(issue) {
-              const match = issue.body?.match(/Blocked by Issue\(s\):\s*(.*)/i);
-              return match ? match[1].split(',').map(i => i.trim()) : [];
+            const body = issue.body || "";
+            const match = body.match(/Blocked by Issue\(s\):\s*(.*)/i);
+
+            if (!match) {
+              console.log("No 'Blocked by Issue(s)' line found.");
+              return;
             }
 
-            async function checkOpenIssues(refs) {
-              const open = [];
-              for (const ref of refs) {
-                const match = ref.match(/#(\d+)/);
-                if (!match) continue;
-                const num = parseInt(match[1]);
-                try {
-                  const { data: blocker } = await github.rest.issues.get({
-                    owner, repo, issue_number: num
-                  });
-                  if (blocker.state === "open") open.push(`#${num}`);
-                } catch (e) {
-                  console.log(`Error checking issue #${num}:`, e.message);
+            const references = match[1]
+              .split(',')
+              .map(ref => ref.trim())
+              .filter(ref => /^#\d+$/.test(ref));
+
+            const openRefs = [];
+
+            for (const ref of references) {
+              const num = parseInt(ref.slice(1));
+              try {
+                const blocker = await github.rest.issues.get({ owner, repo, issue_number: num });
+                if (blocker.data.state === 'open') {
+                  openRefs.push(ref);
                 }
-              }
-              return open;
-            }
-
-            function getStatusLabel(issue) {
-              return issue.labels.find(l => l.name.startsWith("Status:"))?.name || null;
-            }
-
-            async function storePreviousStatus(issue) {
-              const current = getStatusLabel(issue);
-              if (current) {
-                await github.rest.issues.addLabels({
-                  owner, repo, issue_number,
-                  labels: [`PrevStatus:${current.split(':')[1]}`]
-                });
-                await github.rest.issues.removeLabel({
-                  owner, repo, issue_number,
-                  name: current
-                });
+              } catch (err) {
+                console.warn(`Issue ${ref} not found or inaccessible.`);
               }
             }
 
-            function getPreviousStatus(issue) {
-              const prev = issue.labels.find(l => l.name.startsWith("PrevStatus:"));
-              return prev ? prev.name.split(':')[1] : null;
-            }
+            const newLine = openRefs.length > 0
+              ? `Blocked by Issue(s): ${openRefs.join(', ')}`
+              : '';
 
-            async function setStatus(status) {
-              await github.rest.issues.addLabels({
-                owner, repo, issue_number,
-                labels: [`Status:${status}`]
+            const newBody = body.replace(/Blocked by Issue\(s\):.*/i, newLine).trim();
+
+            if (newBody !== body) {
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number,
+                body: newBody
               });
-            }
-
-            async function clearBlockedField(issue, openRefs) {
-              if (issue.body && issue.body.includes("Blocked by Issue(s):")) {
-                const newBody = issue.body.replace(
-                  /Blocked by Issue\(s\):.*/i,
-                  openRefs.length > 0 ? `Blocked by Issue(s): ${openRefs.join(', ')}` : ''
-                ).trim();
-                await github.rest.issues.update({
-                  owner, repo, issue_number,
-                  body: newBody
-                });
-              }
-            }
-
-            // Main logic
-            const refs = getBlockedField(issue);
-            const openRefs = await checkOpenIssues(refs);
-
-            const currentStatus = getStatusLabel(issue);
-
-            if (openRefs.length > 0) {
-              if (currentStatus !== 'Status:Blocked') {
-                await storePreviousStatus(issue);
-                await setStatus('Blocked');
-              }
-              await clearBlockedField(issue, openRefs);
+              console.log("Updated issue body to clean closed references.");
             } else {
-              if (currentStatus === 'Status:Blocked') {
-                const prev = getPreviousStatus(issue);
-                if (prev) {
-                  await setStatus(prev);
-                  await github.rest.issues.removeLabel({
-                    owner, repo, issue_number,
-                    name: `PrevStatus:${prev}`
-                  });
-                } else {
-                  await setStatus('To-Do');
-                }
-                await github.rest.issues.removeLabel({
-                  owner, repo, issue_number,
-                  name: 'Status:Blocked'
-                });
-              }
-              await clearBlockedField(issue, openRefs);
+              console.log("No changes needed.");
             }
