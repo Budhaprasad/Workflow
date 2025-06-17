@@ -1,62 +1,66 @@
-name: Clean Up Blocked
+name: Clean Up Blocked By References
 
 on:
-  issues:
-    types: [opened, edited, reopened]
   workflow_dispatch:
+  issues:
+    types: [edited, reopened, opened]
 
 jobs:
-  update-blocked-comment:
+  cleanup-blocked:
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
-      - uses: actions/github-script@v7
+      - name: Check and update blocked by issues
+        uses: actions/github-script@v7
         with:
           script: |
-            const issue_number = context.issue.number;
+            const issueNumber = context.payload.issue.number;
+            const repo = context.repo.repo;
+            const owner = context.repo.owner;
 
-            // Get all comments for the issue
-            const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number
-            });
+            const issue = context.payload.issue;
+            const body = issue.body;
 
-            for (const comment of comments.data) {
-              const match = comment.body.match(/Blocked by Issue(.*)/);
-              if (!match) continue;
+            // Extract "Blocked by Issue #X #Y" pattern
+            const match = body.match(/Blocked by Issue\s+#([\d\s#]+)/i);
+            if (!match) return;
 
-              const issueRefs = [...comment.body.matchAll(/#(\d+)/g)].map(m => parseInt(m[1]));
-              const openIssues = [];
+            const issueRefs = match[1]
+              .split(/[#\s]+/)
+              .filter(Boolean)
+              .map(Number);
 
-              for (const num of issueRefs) {
-                try {
-                  const issue = await github.rest.issues.get({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: num
-                  });
-
-                  if (issue.data.state === 'open') {
-                    openIssues.push(`#${num}`);
-                  }
-                } catch (e) {
-                  console.log(`Error checking issue #${num}:`, e.message);
-                }
-              }
-
-              // Rebuild the comment
-              const newBody = openIssues.length > 0
-                ? `Blocked by Issue ${openIssues.join(' ')}`
-                : '*No longer blocked*';
-
-              if (newBody !== comment.body) {
-                await github.rest.issues.updateComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: comment.id,
-                  body: newBody
+            let openIssues = [];
+            for (const ref of issueRefs) {
+              try {
+                const res = await github.rest.issues.get({
+                  owner,
+                  repo,
+                  issue_number: ref
                 });
+                if (res.data.state === 'open') {
+                  openIssues.push(ref);
+                }
+              } catch (err) {
+                console.warn(`Could not fetch issue #${ref}: ${err}`);
               }
+            }
+
+            let updatedBody;
+            if (openIssues.length === 0) {
+              // Remove the entire "Blocked by Issue..." line
+              updatedBody = body.replace(/^.*Blocked by Issue.*$/im, '').trim();
+            } else {
+              // Update line to only show open issues
+              updatedBody = body.replace(/Blocked by Issue.*$/im, `Blocked by Issue ${openIssues.map(i => `#${i}`).join(' ')}`);
+            }
+
+            if (updatedBody !== body) {
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body: updatedBody
+              });
             }
