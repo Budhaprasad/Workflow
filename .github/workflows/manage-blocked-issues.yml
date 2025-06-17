@@ -1,63 +1,80 @@
-name: Clear Blocked by Comments If Issue Is Closed
+name: Clear Blocked by Comments if Reference Is Closed
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # You can also use schedule or push triggers
 
 permissions:
-  issues: write
+  issues: write  # Required to update issue comments
 
 jobs:
-  clean-blocked-by-comments:
+  clean-blocked-comments:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check and clear Blocked by comments
+      - name: Check and clean "Blocked by" comments
         uses: actions/github-script@v7
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const regex = /Blocked by #(\d+)/i;
-            
+
+            console.log(`🔍 Scanning open issues in ${owner}/${repo}`);
+
             const issues = await github.rest.issues.listForRepo({
               owner,
               repo,
               state: 'open'
             });
-            
+
             for (const issue of issues.data) {
-              if (issue.comments === 0) continue;
-            
+              console.log(`➡️ Issue #${issue.number}: ${issue.title}`);
+
+              if (issue.comments === 0) {
+                console.log(`   ⛔ No comments on this issue.`);
+                continue;
+              }
+
               const comments = await github.rest.issues.listComments({
                 owner,
                 repo,
                 issue_number: issue.number
               });
-            
+
               for (const comment of comments.data) {
+                console.log(`   💬 Comment ID: ${comment.id}`);
+
                 const match = comment.body.match(regex);
-                if (!match) continue;
-            
+                if (!match) {
+                  console.log(`     🚫 No 'Blocked by' reference found.`);
+                  continue;
+                }
+
                 const blockedIssueNumber = parseInt(match[1]);
+                console.log(`     🔗 Found reference: Blocked by #${blockedIssueNumber}`);
+
                 try {
                   const blockedIssue = await github.rest.issues.get({
                     owner,
                     repo,
                     issue_number: blockedIssueNumber
                   });
-            
+
                   if (blockedIssue.data.state === 'closed') {
-                    console.log(`🧹 Clearing comment in #${issue.number} - Blocked issue #${blockedIssueNumber} is closed.`);
-            
+                    console.log(`     ✅ Issue #${blockedIssueNumber} is closed. Updating comment.`);
+
                     await github.rest.issues.updateComment({
                       owner,
                       repo,
                       comment_id: comment.id,
                       body: '[Auto-removed blocked-by reference: the blocking issue is now closed.]'
                     });
+                  } else {
+                    console.log(`     🕒 Issue #${blockedIssueNumber} is still open. Leaving comment as is.`);
                   }
-                } catch (err) {
-                  console.warn(`⚠️ Could not fetch issue #${blockedIssueNumber}: ${err.message}`);
+                } catch (error) {
+                  console.warn(`     ⚠️ Could not fetch issue #${blockedIssueNumber}: ${error.message}`);
                 }
               }
             }
+
