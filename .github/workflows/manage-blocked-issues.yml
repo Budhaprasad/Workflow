@@ -1,24 +1,43 @@
-name: Read Issues
+name: Read Issues and Comments
 
 on:
-  workflow_dispatch: # Allows manual triggering from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  issues: read
 
 jobs:
-  read-issues:
+  read-issues-comments:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Read open issues using GitHub API
+      - name: Read issues and print comments
         uses: actions/github-script@v7
         with:
           script: |
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: 'open'  // or 'all', 'closed'
+              state: 'open'
             });
 
-            console.log(`Found ${issues.data.length} open issues:`);
-            issues.data.forEach(issue => {
-              console.log(`#${issue.number}: ${issue.title}`);
-            });
+            console.log(`Found ${issues.data.length} open issues`);
+
+            for (const issue of issues.data) {
+              console.log(`\n#${issue.number}: ${issue.title}`);
+
+              if (issue.comments > 0) {
+                const comments = await github.rest.issues.listComments({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number
+                });
+
+                console.log(`  🗨️ ${comments.data.length} comment(s):`);
+                comments.data.forEach(comment => {
+                  console.log(`  - ${comment.user.login}: ${comment.body.substring(0, 100)}...`);
+                });
+              } else {
+                console.log(`  🛑 No comments.`);
+              }
+            }
