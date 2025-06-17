@@ -1,73 +1,67 @@
-name: Auto-clean Blocked by Issues
+name: Check Blocked Issues
 
 on:
-  issues:
-    types: [edited, reopened, closed]
   workflow_dispatch:
 
-permissions:
-  issues: write
-  contents: read
-
 jobs:
-  cleanup-blocked:
+  check-blocked-issues:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     steps:
-      - name: Clean up closed blockers
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Run Block Check Script
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const issue_number = context.issue?.number;
-            const { owner, repo } = context.repo;
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open'
+            });
 
-            if (!issue_number) {
-              console.log("No issue context available (likely a scheduled run). Exiting.");
-              return;
-            }
-
-            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number });
-
-            const body = issue.body || "";
-            const match = body.match(/Blocked by Issue\(s\):\s*(.*)/i);
-
-            if (!match) {
-              console.log("No 'Blocked by Issue(s)' line found.");
-              return;
-            }
-
-            const references = match[1]
-              .split(',')
-              .map(ref => ref.trim())
-              .filter(ref => /^#\d+$/.test(ref));
-
-            const openRefs = [];
-
-            for (const ref of references) {
-              const num = parseInt(ref.slice(1));
-              try {
-                const blocker = await github.rest.issues.get({ owner, repo, issue_number: num });
-                if (blocker.data.state === 'open') {
-                  openRefs.push(ref);
-                }
-              } catch (err) {
-                console.warn(`Issue ${ref} not found or inaccessible.`);
-              }
-            }
-
-            const newLine = openRefs.length > 0
-              ? `Blocked by Issue(s): ${openRefs.join(', ')}`
-              : '';
-
-            const newBody = body.replace(/Blocked by Issue\(s\):.*/i, newLine).trim();
-
-            if (newBody !== body) {
-              await github.rest.issues.update({
-                owner,
-                repo,
-                issue_number,
-                body: newBody
+            for (const issue of issues) {
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number
               });
-              console.log("Updated issue body to clean closed references.");
-            } else {
-              console.log("No changes needed.");
+
+              for (const comment of comments.data) {
+                const match = comment.body.match(/Blocked by Issue(.*)/i);
+                if (!match) continue;
+
+                const referenced = match[1]
+                  .split(/[#\s]+/)
+                  .filter(n => n)
+                  .map(n => parseInt(n, 10))
+                  .filter(n => !isNaN(n));
+
+                const statusChecks = await Promise.all(referenced.map(async (refId) => {
+                  try {
+                    const refIssue = await github.rest.issues.get({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: refId
+                    });
+                    return refIssue.data.state === 'closed';
+                  } catch (e) {
+                    return false;
+                  }
+                }));
+
+                const allClosed = statusChecks.every(v => v === true);
+
+                if (allClosed) {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: comment.id
+                  });
+                  console.log(`Deleted comment on Issue #${issue.number}: ${comment.id}`);
+                }
+              }
             }
