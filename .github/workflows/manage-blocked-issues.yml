@@ -16,11 +16,6 @@ jobs:
         with:
           script: |
             const issue = context.payload.issue;
-            if (!issue) {
-              console.log("No issue found in payload.");
-              return;
-            }
-
             const issueNumber = issue.number;
             const repo = context.repo.repo;
             const owner = context.repo.owner;
