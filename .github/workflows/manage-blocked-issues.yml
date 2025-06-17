@@ -1,4 +1,4 @@
-name: Read Issues and Comments
+name: Detect Tagged Issues in Comments
 
 on:
   workflow_dispatch:
@@ -7,24 +7,24 @@ permissions:
   issues: read
 
 jobs:
-  read-issues-comments:
+  detect-tagged-issues:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Read issues and print comments
+      - name: Find issue comments with tagged issues
         uses: actions/github-script@v7
         with:
           script: |
+            const issueRegex = /(?:^|\s)#(\d+)|(\S+\/\S+)#(\d+)/g;
+
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open'
             });
 
-            console.log(`Found ${issues.data.length} open issues`);
-
             for (const issue of issues.data) {
-              console.log(`\n#${issue.number}: ${issue.title}`);
+              console.log(`\n🔍 Issue #${issue.number}: ${issue.title}`);
 
               if (issue.comments > 0) {
                 const comments = await github.rest.issues.listComments({
@@ -33,11 +33,19 @@ jobs:
                   issue_number: issue.number
                 });
 
-                console.log(`  🗨️ ${comments.data.length} comment(s):`);
-                comments.data.forEach(comment => {
-                  console.log(`  - ${comment.user.login}: ${comment.body.substring(0, 100)}...`);
-                });
-              } else {
-                console.log(`  🛑 No comments.`);
+                for (const comment of comments.data) {
+                  const matches = [...comment.body.matchAll(issueRegex)];
+
+                  if (matches.length > 0) {
+                    console.log(`🗨️  Comment by ${comment.user.login} contains reference(s):`);
+                    matches.forEach(match => {
+                      if (match[1]) {
+                        console.log(`   → References issue #${match[1]} (same repo)`);
+                      } else if (match[2] && match[3]) {
+                        console.log(`   → References issue ${match[2]}#${match[3]} (cross-repo)`);
+                      }
+                    });
+                  }
+                }
               }
             }
