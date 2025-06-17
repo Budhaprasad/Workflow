@@ -1,6 +1,7 @@
 name: Manage Blocked Issues
 
 on:
+  workflow_dispatch:
   issues:
     types: [opened, edited, closed]
 
