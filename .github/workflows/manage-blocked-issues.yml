@@ -2,7 +2,7 @@ name: Manage Blocked Issues
 
 on:
   issues:
-    types: [edited, closed]
+    types: [opened, edited, closed]
 
 permissions:
   issues: write
