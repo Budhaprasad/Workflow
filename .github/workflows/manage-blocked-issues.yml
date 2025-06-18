@@ -1,19 +1,18 @@
-name: Clean Blocked Issue Comments
+# .github/workflows/issue-blocker.yml
+
+name: "Auto Manage Issue Blockers"
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 * * * *'  # every hour
 
 permissions:
   issues: write
-  contents: read
 
 jobs:
   clean-blocked-comments:
     runs-on: ubuntu-latest
     steps:
-      - name: Clean up closed issue references
+      - name: Clean up 'Blocked by' references and manage issue status
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -21,78 +20,67 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const regex = /#(\d+)/g;
+            
+            const issues = await github.rest.issues.listForRepo({ owner, repo, state: 'open' });
+            
+            for (const issue of issues.data) {
+              if (issue.pull_request) continue;
 
-            console.log(`📌 Scanning open issues in ${owner}/${repo}`);
-
-            const issues = await github.paginate(github.rest.issues.listForRepo, {
-              owner,
-              repo,
-              state: 'open'
-            });
-
-            for (const issue of issues) {
               console.log(`\n🔍 Issue #${issue.number}: ${issue.title}`);
+              
+              const comments = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number });
+              let updated = false;
 
-              const comments = await github.paginate(github.rest.issues.listComments, {
-                owner,
-                repo,
-                issue_number: issue.number
-              });
+              for (const comment of comments.data) {
+                if (!comment.body.toLowerCase().includes('blocked by')) continue;
 
-              for (const comment of comments) {
-                const originalBody = comment.body;
-                const matches = [...originalBody.matchAll(regex)];
-                const referencedIssues = matches.map(match => parseInt(match[1]));
+                console.log(`💬 Comment ID: ${comment.id}`);
+                console.log(`📄 Raw: ${JSON.stringify(comment.body)}`);
 
-                if (referencedIssues.length === 0) {
-                  console.log(`   💬 Comment ID: ${comment.id}`);
-                  console.log(`     🚫 No 'Blocked by' reference found.`);
-                  continue;
-                }
+                const matches = [...comment.body.matchAll(regex)].map(m => parseInt(m[1]));
+                const stillOpen = [];
 
-                console.log(`   💬 Comment ID: ${comment.id}`);
-                console.log(`     📄 Raw: "${originalBody.trim()}"`);
-
-                const stillBlocked = [];
-
-                for (const ref of referencedIssues) {
+                for (const ref of matches) {
                   try {
                     const refIssue = await github.rest.issues.get({ owner, repo, issue_number: ref });
                     if (refIssue.data.state === 'open') {
-                      stillBlocked.push(`#${ref}`);
-                      console.log(`     🔗 Found reference to issue #${ref}`);
-                      console.log(`     ⏳ Issue #${ref} is still open.`);
+                      console.log(`🔗 Found reference to issue #${ref}\n⏳ Issue #${ref} is still open.`);
+                      stillOpen.push(`#${ref}`);
                     } else {
-                      console.log(`     🔗 Found reference to issue #${ref}`);
-                      console.log(`     ✅ Issue #${ref} is closed.`);
+                      console.log(`🔗 Found reference to issue #${ref}\n✅ Issue #${ref} is closed.`);
                     }
                   } catch (err) {
-                    console.warn(`     ⚠️ Error fetching issue #${ref}: ${err.message}`);
+                    console.warn(`⚠️ Issue #${ref} could not be fetched.`);
                   }
                 }
 
-                if (stillBlocked.length === 0) {
-                  const newBody = `[Auto-cleaned: all blocking issues are closed]`;
-                  console.log(`     🧹 Updating comment to: "${newBody}"`);
+                const newBody = stillOpen.length > 0
+                  ? `Blocked by ${stillOpen.join(' ')}`
+                  : '[Auto-removed blocked-by reference: all blocking issues closed.]';
+
+                if (comment.body !== newBody) {
                   await github.rest.issues.updateComment({
                     owner,
                     repo,
                     comment_id: comment.id,
                     body: newBody
                   });
+                  updated = true;
+                  console.log(`✏️ Comment updated to: "${newBody}"`);
                 } else {
-                  const newBody = `Blocked by ${stillBlocked.join(' ')}`;
-                  if (newBody !== originalBody.trim()) {
-                    console.log(`     ✏️ Updating comment to: "${newBody}"`);
-                    await github.rest.issues.updateComment({
-                      owner,
-                      repo,
-                      comment_id: comment.id,
-                      body: newBody
-                    });
-                  } else {
-                    console.log(`     ✅ Comment is already correct. No update needed.`);
-                  }
+                  console.log(`✅ Comment is already correct. No update needed.`);
                 }
+              }
+
+              // Manage issue status using labels
+              const labels = issue.labels.map(l => l.name);
+              const hasBlocked = comments.data.some(c => c.body.includes('Blocked by #') && !c.body.includes('Auto-removed'));
+
+              if (hasBlocked && !labels.includes('Blocked')) {
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['Blocked'] });
+                console.log(`🏷️ Label 'Blocked' added.`);
+              } else if (!hasBlocked && labels.includes('Blocked')) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: 'Blocked' });
+                console.log(`🚫 Label 'Blocked' removed.`);
               }
             }
