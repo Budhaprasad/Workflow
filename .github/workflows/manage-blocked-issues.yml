@@ -3,8 +3,6 @@
 name: "Auto Manage Issue Blockers"
 
 on:
-  schedule:
-    - cron: '*/30 * * * *'  # every 30 minutes
   workflow_dispatch:
 
 permissions:
@@ -82,7 +80,7 @@ jobs:
                 await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['Blocked'] });
                 console.log(`🏷️ Label 'Blocked' added.`);
               } else if (!hasBlocked && labels.includes('Blocked')) {
-                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, name: 'To-Do' });
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['To-Do'] });
                 console.log(`🚫 Label 'To-Do' added.`);
               }
             }
