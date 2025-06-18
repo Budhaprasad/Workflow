@@ -80,7 +80,7 @@ jobs:
                 await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['Blocked'] });
                 console.log(`🏷️ Label 'Blocked' added.`);
               } else if (!hasBlocked && labels.includes('Blocked')) {
-                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['To-Do'] });
+                await github.rest.issues.setLabels({ owner, repo, issue_number: issue.number, labels: ['To-Do'] });
                 console.log(`🚫 Label 'To-Do' added.`);
               }
             }
