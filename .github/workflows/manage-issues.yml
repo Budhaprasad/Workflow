@@ -1,0 +1,123 @@
+name: "Auto Manage Issue Blockers"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  clean-blocked-comments:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clean up 'Blocked by' references and manage issue status
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const regex = /#(\d+)/g;
+            const statusLabels = ['To-Do', 'In Progress', 'Blocked', 'Done'];
+
+            const issues = await github.rest.issues.listForRepo({ owner, repo, state: 'open' });
+
+            for (const issue of issues.data) {
+              if (issue.pull_request) continue;
+
+              console.log(`\n🔍 Issue #${issue.number}: ${issue.title}`);
+
+              const labels = issue.labels.map(l => l.name);
+              const currentStatus = labels.find(l => statusLabels.includes(l));
+              const previousStatus = labels.find(l => l.startsWith('previous-status:'));
+              const baseLabels = labels.filter(
+                l => !statusLabels.includes(l) && !l.startsWith('previous-status:')
+              );
+
+              const comments = await github.rest.issues.listComments({ owner, repo, issue_number: issue.number });
+              let updated = false;
+              let hasBlocked = false;
+
+              for (const comment of comments.data) {
+                if (!comment.body.toLowerCase().includes('blocked by')) continue;
+
+                console.log(`💬 Comment ID: ${comment.id}`);
+                console.log(`📄 Raw: ${JSON.stringify(comment.body)}`);
+
+                const matches = [...comment.body.matchAll(regex)].map(m => parseInt(m[1]));
+                const stillOpen = [];
+
+                for (const ref of matches) {
+                  try {
+                    const refIssue = await github.rest.issues.get({ owner, repo, issue_number: ref });
+                    if (refIssue.data.state === 'open') {
+                      console.log(`🔗 Found reference to issue #${ref}\n⏳ Issue #${ref} is still open.`);
+                      stillOpen.push(`#${ref}`);
+                    } else {
+                      console.log(`🔗 Found reference to issue #${ref}\n✅ Issue #${ref} is closed.`);
+                    }
+                  } catch (err) {
+                    console.warn(`⚠️ Issue #${ref} could not be fetched.`);
+                  }
+                }
+
+                const newBody = stillOpen.length > 0
+                  ? `Blocked by ${stillOpen.join(' ')}`
+                  : '[Auto-removed blocked-by reference: all blocking issues closed.]';
+
+                if (comment.body !== newBody) {
+                  await github.rest.issues.updateComment({
+                    owner,
+                    repo,
+                    comment_id: comment.id,
+                    body: newBody
+                  });
+                  updated = true;
+                  console.log(`✏️ Comment updated to: "${newBody}"`);
+                } else {
+                  console.log(`✅ Comment is already correct. No update needed.`);
+                }
+
+                if (stillOpen.length > 0) hasBlocked = true;
+              }
+
+              // Status management with history tracking
+              if (hasBlocked && !labels.includes('Blocked')) {
+                const newLabels = [...baseLabels, 'Blocked'];
+
+                if (currentStatus && currentStatus !== 'Blocked') {
+                  newLabels.push(`previous-status:${currentStatus}`);
+                  console.log(`💾 Saved previous status: ${currentStatus}`);
+                }
+
+                await github.rest.issues.setLabels({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  labels: newLabels
+                });
+
+                console.log(`🏷️ Label 'Blocked' added.`);
+              }
+
+              if (!hasBlocked && labels.includes('Blocked')) {
+                let restore = 'To-Do';
+                if (previousStatus) {
+                  restore = previousStatus.split(':')[1];
+                  console.log(`🔁 Restoring previous status: ${restore}`);
+                } else {
+                  console.log(`🔁 No previous status found. Defaulting to 'To-Do'`);
+                }
+
+                const newLabels = [...baseLabels, restore];
+
+                await github.rest.issues.setLabels({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  labels: newLabels
+                });
+
+                console.log(`✅ Status restored to '${restore}'.`);
+              }
+            }
